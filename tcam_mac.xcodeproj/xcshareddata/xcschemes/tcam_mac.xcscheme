@@ -16,7 +16,7 @@
             <BuildableReference
                BuildableIdentifier = "primary"
                BlueprintIdentifier = "14D995C42F8CD504002E5170"
-               BuildableName = "tcam_mac.app"
+               BuildableName = "Tesla Dashcam.app"
                BlueprintName = "tcam_mac"
                ReferencedContainer = "container:tcam_mac.xcodeproj">
             </BuildableReference>
@@ -70,7 +70,7 @@
          <BuildableReference
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "14D995C42F8CD504002E5170"
-            BuildableName = "tcam_mac.app"
+            BuildableName = "Tesla Dashcam.app"
             BlueprintName = "tcam_mac"
             ReferencedContainer = "container:tcam_mac.xcodeproj">
          </BuildableReference>
@@ -87,7 +87,7 @@
          <BuildableReference
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "14D995C42F8CD504002E5170"
-            BuildableName = "tcam_mac.app"
+            BuildableName = "Tesla Dashcam.app"
             BlueprintName = "tcam_mac"
             ReferencedContainer = "container:tcam_mac.xcodeproj">
          </BuildableReference>

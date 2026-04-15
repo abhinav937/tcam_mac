@@ -214,7 +214,7 @@ struct ContentView: View {
                     .font(.system(size: 28, weight: .bold, design: .rounded))
                     .foregroundStyle(.white)
 
-                Text(selectedFolder?.lastPathComponent ?? "No folder selected")
+                Text(selectedFolder.map { "Source: \($0.lastPathComponent)" } ?? "Source: No folder selected")
                     .font(.callout)
                     .foregroundStyle(.white.opacity(0.75))
                     .lineLimit(1)
@@ -382,14 +382,37 @@ struct ContentView: View {
                     let isSelected = dateFilter == filter
                     Text(filter.rawValue)
                         .font(.caption.weight(.semibold))
-                        .foregroundStyle(isSelected ? .white : .secondary)
+                        .foregroundStyle(isSelected ? .white : .white.opacity(0.78))
                         .padding(.horizontal, 12)
                         .padding(.vertical, 6)
                         .background(
                             isSelected
-                                ? AnyShapeStyle(Color.blue.opacity(0.35))
-                                : AnyShapeStyle(Color.white.opacity(0.08)),
+                                ? AnyShapeStyle(
+                                    LinearGradient(
+                                        colors: [
+                                            Color(red: 0.13, green: 0.49, blue: 0.97),
+                                            Color(red: 0.08, green: 0.36, blue: 0.82)
+                                        ],
+                                        startPoint: .topLeading,
+                                        endPoint: .bottomTrailing
+                                    )
+                                )
+                                : AnyShapeStyle(Color.white.opacity(0.10)),
                             in: Capsule()
+                        )
+                        .overlay(
+                            Capsule()
+                                .stroke(
+                                    isSelected
+                                        ? Color.white.opacity(0.14)
+                                        : Color.white.opacity(0.08),
+                                    lineWidth: 1
+                                )
+                        )
+                        .shadow(
+                            color: isSelected ? Color(red: 0.13, green: 0.49, blue: 0.97).opacity(0.28) : .clear,
+                            radius: 8,
+                            y: 3
                         )
                         .contentShape(Capsule())
                         .onTapGesture { withAnimation(.hover) { dateFilter = filter } }
@@ -407,14 +430,21 @@ struct ContentView: View {
                     Text("Favorites")
                         .font(.caption.weight(.semibold))
                 }
-                .foregroundStyle(favActive ? Color.pink : Color.secondary)
+                .foregroundStyle(favActive ? Color(red: 1.0, green: 0.48, blue: 0.71) : Color.white.opacity(0.78))
                 .padding(.horizontal, 12)
                 .padding(.vertical, 6)
                 .background(
                     favActive
-                        ? AnyShapeStyle(Color.pink.opacity(0.20))
-                        : AnyShapeStyle(Color.white.opacity(0.08)),
+                        ? AnyShapeStyle(Color(red: 1.0, green: 0.33, blue: 0.63).opacity(0.24))
+                        : AnyShapeStyle(Color.white.opacity(0.10)),
                     in: Capsule()
+                )
+                .overlay(
+                    Capsule()
+                        .stroke(
+                            favActive ? Color(red: 1.0, green: 0.55, blue: 0.76).opacity(0.32) : Color.white.opacity(0.08),
+                            lineWidth: 1
+                        )
                 )
                 .contentShape(Capsule())
                 .onTapGesture { withAnimation(.hover) { showFavoritesOnly.toggle() } }
@@ -584,7 +614,7 @@ struct ContentView: View {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
-        panel.message = "Re-select your TeslaCam folder to grant access"
+        panel.message = "Re-select your TeslaCam folder or drive to grant access"
         panel.directoryURL = url
         panel.prompt = "Open"
 
@@ -656,7 +686,7 @@ struct ContentView: View {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
-        panel.message = "Select your TeslaCam root folder"
+        panel.message = "Select your TeslaCam folder or the drive that contains it"
 
         guard panel.runModal() == .OK, let url = panel.url else { return }
 
@@ -672,12 +702,13 @@ struct ContentView: View {
     }
 
     private func loadFolder(_ url: URL) {
-        selectedFolder = url
+        let resolvedURL = resolveTeslaCamRoot(from: url)
+        selectedFolder = resolvedURL
         selectedClip = nil
         loadState = .loading
 
         Task.detached(priority: .userInitiated) {
-            let result = await TeslaCamParser.parseFolder(url)
+            let result = await TeslaCamParser.parseFolder(resolvedURL)
             await MainActor.run {
                 clipsBySection = result
                 let total = result.values.reduce(0) { $0 + $1.count }
@@ -689,6 +720,35 @@ struct ContentView: View {
                     }
                 }
             }
+        }
+    }
+
+    private func resolveTeslaCamRoot(from url: URL) -> URL {
+        if isTeslaCamRoot(url) {
+            return url
+        }
+
+        let directChild = url.appendingPathComponent("TeslaCam", isDirectory: true)
+        if isTeslaCamRoot(directChild) {
+            return directChild
+        }
+
+        let fm = FileManager.default
+        if let children = try? fm.contentsOfDirectory(at: url, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]),
+           let teslaCamFolder = children.first(where: {
+               $0.lastPathComponent.caseInsensitiveCompare("TeslaCam") == .orderedSame && isTeslaCamRoot($0)
+           }) {
+            return teslaCamFolder
+        }
+
+        return url
+    }
+
+    private func isTeslaCamRoot(_ url: URL) -> Bool {
+        let fm = FileManager.default
+        let clipFolderNames = ["RecentClips", "SavedClips", "SentryClips"]
+        return clipFolderNames.contains {
+            fm.fileExists(atPath: url.appendingPathComponent($0, isDirectory: true).path)
         }
     }
 }
@@ -791,13 +851,13 @@ struct ClipPreviewCard: View {
 
 // MARK: - Thumbnail Cache
 
-private final class ThumbnailCache: @unchecked Sendable {
-    nonisolated static let shared = ThumbnailCache()
+private actor ThumbnailCache {
+    static let shared = ThumbnailCache()
 
-    nonisolated(unsafe) private let memCache = NSCache<NSString, NSImage>()
+    private let memCache = NSCache<NSString, NSImage>()
     private let diskCacheDir: URL
 
-    nonisolated private init() {
+    private init() {
         let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("tcam_thumbs")
         try? FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
         diskCacheDir = tmp
@@ -805,7 +865,7 @@ private final class ThumbnailCache: @unchecked Sendable {
         memCache.totalCostLimit = 120 * 1024 * 1024 // 120 MB
     }
 
-    nonisolated func image(for key: String) -> NSImage? {
+    func image(for key: String) -> NSImage? {
         if let mem = memCache.object(forKey: key as NSString) { return mem }
         let diskURL = diskCacheDir.appendingPathComponent(key).appendingPathExtension("jpg")
         guard let data = try? Data(contentsOf: diskURL),
@@ -814,7 +874,7 @@ private final class ThumbnailCache: @unchecked Sendable {
         return img
     }
 
-    nonisolated func store(_ image: NSImage, for key: String) {
+    func store(_ image: NSImage, for key: String) {
         memCache.setObject(image, forKey: key as NSString)
         let diskURL = diskCacheDir.appendingPathComponent(key).appendingPathExtension("jpg")
         guard !FileManager.default.fileExists(atPath: diskURL.path) else { return }
@@ -872,7 +932,7 @@ private struct ClipThumbnailView<Placeholder: View>: View {
         let key = ThumbnailCache.key(for: url)
 
         // 1. Memory / disk cache hit — instant
-        if let cached = ThumbnailCache.shared.image(for: key) {
+        if let cached = await ThumbnailCache.shared.image(for: key) {
             return Image(nsImage: cached)
         }
 
@@ -883,7 +943,7 @@ private struct ClipThumbnailView<Placeholder: View>: View {
             if ["png", "jpg", "jpeg", "heic"].contains(fileExt),
                let nsImage = NSImage(contentsOf: url) {
                 let thumb = nsImage.resized(toMaxDimension: 600)
-                ThumbnailCache.shared.store(thumb, for: key)
+                await ThumbnailCache.shared.store(thumb, for: key)
                 return Image(nsImage: thumb)
             }
 
@@ -907,7 +967,7 @@ private struct ClipThumbnailView<Placeholder: View>: View {
             for time in probeTimes {
                 if let result = try? await generator.image(at: time) {
                     let nsImage = NSImage(cgImage: result.image, size: .zero)
-                    ThumbnailCache.shared.store(nsImage, for: key)
+                    await ThumbnailCache.shared.store(nsImage, for: key)
                     return Image(nsImage: nsImage)
                 }
             }
@@ -1121,9 +1181,11 @@ private class TeslaCamParser {
         let sortedMoments = moments.sorted { $0.timestamp < $1.timestamp }
         let fallbackThumb = sortedMoments.first?.files[.front] ?? sortedMoments.first?.files.values.first
 
+        let sectionTitle = type.rawValue.capitalized
+
         return TeslaClip(
             folderURL: folderURL,
-            title: "\(type.title) • \(eventDate.formatted(date: .abbreviated, time: .shortened))",
+            title: "\(sectionTitle) • \(eventDate.formatted(date: .abbreviated, time: .shortened))",
             date: eventDate,
             type: type,
             thumbnailURL: thumbURL ?? fallbackThumb,
