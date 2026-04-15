@@ -1093,6 +1093,7 @@ struct CompactTelemetryHUD: View {
     let seiState: SEIState
     let playerSeconds: Double
     let clipStartDate: Date
+    var showAutopilotBadge: Bool = true
 
     var body: some View {
         switch seiState {
@@ -1126,7 +1127,8 @@ struct CompactTelemetryHUD: View {
                 speedDisplay
                 Spacer()
                 dateDisplay
-                if let label = apShort(current?.autopilotState), !label.isEmpty {
+                if showAutopilotBadge,
+                   let label = apShort(current?.autopilotState), !label.isEmpty {
                     apBadge(label).padding(.leading, 6)
                 }
             }
@@ -1702,6 +1704,8 @@ struct CropExportSheet: View {
     @State private var exportError: String? = nil
     @State private var exportDone = false
     @State private var exportShowsMap: Bool
+    @State private var exportShowsGraph: Bool = true
+    @State private var exportShowsFSDBadge: Bool = true
 
     init(clip: TeslaClip, viewMode: ViewMode, players: [CameraChannel: AVPlayer],
          seiTimeline: [(seconds: Double, metadata: SeiMetadata)],
@@ -1833,11 +1837,35 @@ struct CropExportSheet: View {
                 Text("Burned-in Overlays").font(.headline)
 
                 HStack(spacing: 16) {
-                    Label("Live telemetry HUD", systemImage: "gauge.with.dots.needle.67percent")
+                    Label(exportShowsFSDBadge ? "Live telemetry HUD + FSD/AP" : "Live telemetry HUD", systemImage: "gauge.with.dots.needle.67percent")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Label(exportShowsGraph ? "Speed / G graph" : "Graph excluded from export", systemImage: exportShowsGraph ? "chart.xyaxis.line" : "chart.xyaxis.line")
                         .font(.caption).foregroundStyle(.secondary)
                     Label(exportShowsMap ? "Live map route + marker" : "Map excluded from export", systemImage: exportShowsMap ? "map" : "map.slash")
                         .font(.caption).foregroundStyle(.secondary)
                 }
+
+                Toggle(isOn: $exportShowsFSDBadge) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Include FSD / AP badge")
+                            .font(.callout.weight(.semibold))
+                        Text("Exports the autopilot status badge inside the telemetry HUD.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .toggleStyle(.switch)
+
+                Toggle(isOn: $exportShowsGraph) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Include speed profile graph")
+                            .font(.callout.weight(.semibold))
+                        Text("Exports the bottom speed and acceleration graph.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .toggleStyle(.switch)
 
                 Toggle(isOn: $exportShowsMap) {
                     VStack(alignment: .leading, spacing: 2) {
@@ -1964,6 +1992,8 @@ struct CropExportSheet: View {
             gpsTrail: gpsTrail,
             mapStyle: mapStyle,
             mapFollowsVehicle: mapFollowsVehicle,
+            showFSDBadge: exportShowsFSDBadge,
+            showSpeedGraph: exportShowsGraph,
             showMap: exportShowsMap,
             outputURL: outputURL
         )
@@ -2002,6 +2032,8 @@ final class VideoExportEngine {
         let gpsTrail: [GPSTrailPoint]
         let mapStyle: MapStyleOption
         let mapFollowsVehicle: Bool
+        let showFSDBadge: Bool
+        let showSpeedGraph: Bool
         let showMap: Bool
         let outputURL: URL
     }
@@ -2010,8 +2042,16 @@ final class VideoExportEngine {
 
     private static let exportFPS: Double = 30
     private static let mapFPS: Double = 30
-    private static let renderScale: CGFloat = 2
-    private static let hudFrame = CGRect(x: 24, y: 30, width: 340, height: 128)
+    private static let renderScale: CGFloat = 4
+    private static let textRenderScale: CGFloat = 6
+    private static let hudRenderScale: CGFloat = 2
+    private static let hudBaseSize = CGSize(width: 340, height: 128)
+    private static let hudFrame = CGRect(
+        x: 24,
+        y: 30,
+        width: hudBaseSize.width * hudRenderScale,
+        height: hudBaseSize.height * hudRenderScale
+    )
     private static let mapPadding: CGFloat = 16
     private static let mapFrame = CGRect(
         x: outputSize.width - 280 - mapPadding,
@@ -2019,9 +2059,17 @@ final class VideoExportEngine {
         width: 280,
         height: 210
     )
+    private static let graphPadding: CGFloat = 18
+    private static let graphFrame = CGRect(
+        x: hudFrame.maxX + graphPadding,
+        y: 30,
+        width: max(420, mapFrame.minX - (hudFrame.maxX + graphPadding * 2)),
+        height: 72
+    )
 
     private static let glassCornerRadius: CGFloat = 14
     private static let mapCornerRadius: CGFloat = 14
+    private static let graphCornerRadius: CGFloat = 12
 
     private struct RouteSample {
         let seconds: Double
@@ -2093,6 +2141,15 @@ final class VideoExportEngine {
         let trailPath: CGPath?
         let markerPoint: CGPoint?
         let heading: Double
+    }
+
+    private struct ExportGraphBackground {
+        let speedFillPath: CGPath
+        let speedLinePath: CGPath
+        let gForcePath: CGPath
+        let brakeTicksPath: CGPath?
+        let maxSpeedText: String
+        let maxGForceText: String
     }
 
     private struct TextSpec {
@@ -2352,6 +2409,11 @@ final class VideoExportEngine {
             parentLayer.addSublayer(hudLayer)
         }
 
+        if config.showSpeedGraph,
+           let graphLayer = makeSpeedGraphOverlayLayer(config: config, duration: exportDuration, absoluteStart: absoluteStart) {
+            parentLayer.addSublayer(graphLayer)
+        }
+
         if config.showMap {
             do {
                 if let mapLayer = try await makeMapOverlayLayer(config: config, duration: exportDuration, absoluteStart: absoluteStart) {
@@ -2383,7 +2445,8 @@ final class VideoExportEngine {
                 current: nil,
                 seiState: .unavailable,
                 playerSeconds: absoluteStart,
-                clipStartDate: config.clip.date
+                clipStartDate: config.clip.date,
+                showAutopilotBadge: config.showFSDBadge
             )
             return layer
         }
@@ -2393,7 +2456,7 @@ final class VideoExportEngine {
 
         var compactFrames: [(time: Double, sample: HUDSample, state: ExportHUDRenderState)] = []
         for sample in samples {
-            let state = makeExportHUDRenderState(from: sample)
+            let state = makeExportHUDRenderState(from: sample, showAutopilotBadge: config.showFSDBadge)
             if compactFrames.last?.state != state {
                 compactFrames.append((time: sample.relativeTime, sample: sample, state: state))
             }
@@ -2410,7 +2473,8 @@ final class VideoExportEngine {
                 current: frame.sample.metadata,
                 seiState: .loaded(1),
                 playerSeconds: absoluteStart + frame.time,
-                clipStartDate: config.clip.date
+                clipStartDate: config.clip.date,
+                showAutopilotBadge: config.showFSDBadge
             )
             if let rendered {
                 cache[frame.state] = rendered
@@ -2435,6 +2499,139 @@ final class VideoExportEngine {
         )
 
         return layer
+    }
+
+    // MARK: - Speed Graph Overlay
+
+    @MainActor
+    private static func makeSpeedGraphOverlayLayer(
+        config: ExportConfig,
+        duration: Double,
+        absoluteStart: Double
+    ) -> CALayer? {
+        let trimmedTimeline = trimmedSEISamples(config: config)
+        guard trimmedTimeline.count > 1,
+              let background = makeGraphBackground(
+                timeline: trimmedTimeline,
+                duration: duration,
+                size: graphFrame.size
+              ) else { return nil }
+
+        let shadowLayer = CALayer()
+        shadowLayer.frame = graphFrame
+        shadowLayer.shadowColor = NSColor.black.cgColor
+        shadowLayer.shadowOpacity = 0.28
+        shadowLayer.shadowRadius = 10
+        shadowLayer.shadowOffset = CGSize(width: 0, height: 4)
+        shadowLayer.shadowPath = CGPath(
+            roundedRect: shadowLayer.bounds,
+            cornerWidth: graphCornerRadius,
+            cornerHeight: graphCornerRadius,
+            transform: nil
+        )
+
+        let clipLayer = CALayer()
+        clipLayer.frame = shadowLayer.bounds
+        clipLayer.cornerRadius = graphCornerRadius
+        clipLayer.masksToBounds = true
+        clipLayer.backgroundColor = NSColor.black.withAlphaComponent(0.82).cgColor
+        shadowLayer.addSublayer(clipLayer)
+
+        let canvasLayer = CALayer()
+        canvasLayer.frame = clipLayer.bounds
+        canvasLayer.isGeometryFlipped = true
+        clipLayer.addSublayer(canvasLayer)
+
+        let fillLayer = CAShapeLayer()
+        fillLayer.frame = canvasLayer.bounds
+        fillLayer.path = background.speedFillPath
+        fillLayer.fillColor = blueSoft.cgColor
+        canvasLayer.addSublayer(fillLayer)
+
+        let speedLayer = CAShapeLayer()
+        speedLayer.frame = canvasLayer.bounds
+        speedLayer.path = background.speedLinePath
+        speedLayer.fillColor = nil
+        speedLayer.strokeColor = blue.nsColor.withAlphaComponent(0.78).cgColor
+        speedLayer.lineWidth = 1.5
+        speedLayer.lineJoin = .round
+        speedLayer.lineCap = .round
+        canvasLayer.addSublayer(speedLayer)
+
+        let gForceLayer = CAShapeLayer()
+        gForceLayer.frame = canvasLayer.bounds
+        gForceLayer.path = background.gForcePath
+        gForceLayer.fillColor = nil
+        gForceLayer.strokeColor = orange.nsColor.withAlphaComponent(0.88).cgColor
+        gForceLayer.lineWidth = 1.2
+        gForceLayer.lineJoin = .round
+        gForceLayer.lineCap = .round
+        canvasLayer.addSublayer(gForceLayer)
+
+        if let brakeTicksPath = background.brakeTicksPath {
+            let brakeTicksLayer = CAShapeLayer()
+            brakeTicksLayer.frame = canvasLayer.bounds
+            brakeTicksLayer.path = brakeTicksPath
+            brakeTicksLayer.fillColor = nil
+            brakeTicksLayer.strokeColor = red.nsColor.withAlphaComponent(0.72).cgColor
+            brakeTicksLayer.lineWidth = 1
+            canvasLayer.addSublayer(brakeTicksLayer)
+        }
+
+        let titleLayer = makeTextContentLayer(frame: CGRect(x: 6, y: 4, width: 90, height: 10))
+        clipLayer.addSublayer(titleLayer)
+        applyStaticText(
+            to: titleLayer,
+            value: TextFrame(text: "SPEED / ACCEL", color: ColorSpec(r: 1, g: 1, b: 1, a: 0.22)),
+            spec: TextSpec(size: titleLayer.bounds.size, font: NSFont.systemFont(ofSize: 7, weight: .semibold), alignment: .left)
+        )
+
+        let maxSpeedLayer = makeTextContentLayer(frame: CGRect(x: graphFrame.width - 96, y: graphFrame.height - 14, width: 92, height: 10))
+        clipLayer.addSublayer(maxSpeedLayer)
+        applyStaticText(
+            to: maxSpeedLayer,
+            value: TextFrame(text: background.maxSpeedText, color: ColorSpec(r: 1, g: 1, b: 1, a: 0.30)),
+            spec: TextSpec(size: maxSpeedLayer.bounds.size, font: NSFont.systemFont(ofSize: 8, weight: .regular), alignment: .right)
+        )
+
+        let maxGForceLayer = makeTextContentLayer(frame: CGRect(x: graphFrame.width - 96, y: graphFrame.height - 26, width: 92, height: 10))
+        clipLayer.addSublayer(maxGForceLayer)
+        applyStaticText(
+            to: maxGForceLayer,
+            value: TextFrame(text: background.maxGForceText, color: ColorSpec(r: orange.r, g: orange.g, b: orange.b, a: 0.65)),
+            spec: TextSpec(size: maxGForceLayer.bounds.size, font: NSFont.systemFont(ofSize: 8, weight: .regular), alignment: .right)
+        )
+
+        let playheadLayer = CALayer()
+        playheadLayer.frame = CGRect(x: 0, y: 0, width: 1.5, height: graphFrame.height)
+        playheadLayer.backgroundColor = NSColor.white.withAlphaComponent(0.88).cgColor
+        canvasLayer.addSublayer(playheadLayer)
+
+        let currentLabelLayer = makeTextContentLayer(frame: CGRect(x: 4, y: graphFrame.height - 16, width: 180, height: 12))
+        clipLayer.addSublayer(currentLabelLayer)
+
+        applyGraphPlayheadAnimations(
+            to: playheadLayer,
+            labelLayer: currentLabelLayer,
+            config: config,
+            duration: duration,
+            absoluteStart: absoluteStart
+        )
+
+        let border = CAShapeLayer()
+        border.frame = clipLayer.bounds
+        border.path = CGPath(
+            roundedRect: clipLayer.bounds,
+            cornerWidth: graphCornerRadius,
+            cornerHeight: graphCornerRadius,
+            transform: nil
+        )
+        border.fillColor = NSColor.clear.cgColor
+        border.strokeColor = glassStroke.cgColor
+        border.lineWidth = 1
+        clipLayer.addSublayer(border)
+
+        return shadowLayer
     }
 
     @MainActor
@@ -2471,15 +2668,19 @@ final class VideoExportEngine {
         current: SeiMetadata?,
         seiState: SEIState,
         playerSeconds: Double,
-        clipStartDate: Date
+        clipStartDate: Date,
+        showAutopilotBadge: Bool
     ) -> CGImage? {
         let renderer = ImageRenderer(
             content: CompactTelemetryHUD(
                 current: current,
                 seiState: seiState,
                 playerSeconds: playerSeconds,
-                clipStartDate: clipStartDate
+                clipStartDate: clipStartDate,
+                showAutopilotBadge: showAutopilotBadge
             )
+            .frame(width: hudBaseSize.width, height: hudBaseSize.height, alignment: .topLeading)
+            .scaleEffect(hudRenderScale, anchor: .topLeading)
             .frame(width: hudFrame.width, height: hudFrame.height, alignment: .topLeading)
             .environment(\.colorScheme, .dark)
         )
@@ -2488,14 +2689,18 @@ final class VideoExportEngine {
         return renderer.cgImage
     }
 
-    private static func makeExportHUDRenderState(from sample: HUDSample) -> ExportHUDRenderState {
+    private static func makeExportHUDRenderState(from sample: HUDSample, showAutopilotBadge: Bool) -> ExportHUDRenderState {
         let metadata = sample.metadata
         let autopilotLabel: String
-        switch metadata?.autopilotState {
-        case .selfDriving: autopilotLabel = "FSD"
-        case .autosteer: autopilotLabel = "AP"
-        case .tacc: autopilotLabel = "TACC"
-        default: autopilotLabel = ""
+        if showAutopilotBadge {
+            switch metadata?.autopilotState {
+            case .selfDriving: autopilotLabel = "FSD"
+            case .autosteer: autopilotLabel = "AP"
+            case .tacc: autopilotLabel = "TACC"
+            default: autopilotLabel = ""
+            }
+        } else {
+            autopilotLabel = ""
         }
 
         let gearText: String
@@ -2520,6 +2725,83 @@ final class VideoExportEngine {
             leftBlinkerOn: (metadata?.blinkerOnLeft ?? false) && sample.blinkerOnPhase,
             rightBlinkerOn: (metadata?.blinkerOnRight ?? false) && sample.blinkerOnPhase,
             acceleratorPressed: (metadata?.acceleratorPedalPosition ?? 0) > 0.05
+        )
+    }
+
+    @MainActor
+    private static func applyGraphPlayheadAnimations(
+        to playheadLayer: CALayer,
+        labelLayer: CALayer,
+        config: ExportConfig,
+        duration: Double,
+        absoluteStart: Double
+    ) {
+        let frameTimes = sampleTimes(duration: duration, fps: exportFPS)
+        guard !frameTimes.isEmpty else { return }
+
+        let playheadPositions = frameTimes.map { relativeTime -> (Double, NSValue) in
+            let x = min(CGFloat(relativeTime / max(duration, 0.001)) * graphFrame.width, graphFrame.width - 1)
+            return (
+                relativeTime,
+                NSValue(point: NSPoint(x: x + playheadLayer.bounds.width / 2, y: graphFrame.height / 2))
+            )
+        }
+
+        playheadLayer.position = playheadPositions[0].1.pointValue
+        applyKeyframeAnimation(
+            to: playheadLayer,
+            keyPath: "position",
+            values: playheadPositions.map(\.1),
+            keyTimes: normalizedKeyTimes(for: playheadPositions.map(\.0), duration: duration),
+            duration: duration,
+            calculationMode: .linear
+        )
+
+        let labelWidth = labelLayer.bounds.width
+        let labelFrames = frameTimes.compactMap { relativeTime -> (time: Double, value: TextFrame)? in
+            let absoluteTime = absoluteStart + relativeTime
+            guard let metadata = nearestSEIFrame(to: absoluteTime, in: config.seiTimeline)?.metadata else { return nil }
+            let mph = Int(metadata.vehicleSpeedMps * 2.237)
+            let gForce = combinedGForce(for: metadata)
+            return (
+                time: relativeTime,
+                value: TextFrame(
+                    text: "\(mph) mph  •  \(String(format: "%.2fG", gForce))",
+                    color: ColorSpec(r: 1, g: 1, b: 1, a: 0.82)
+                )
+            )
+        }
+
+        if let firstFrame = labelFrames.first {
+            applyStaticText(
+                to: labelLayer,
+                value: firstFrame.value,
+                spec: TextSpec(size: labelLayer.bounds.size, font: NSFont.monospacedSystemFont(ofSize: 9, weight: .semibold), alignment: .left)
+            )
+        }
+        applyTextFrames(
+            to: labelLayer,
+            frames: labelFrames,
+            duration: duration,
+            spec: TextSpec(size: labelLayer.bounds.size, font: NSFont.monospacedSystemFont(ofSize: 9, weight: .semibold), alignment: .left)
+        )
+
+        let labelPositions = frameTimes.map { relativeTime -> (Double, NSValue) in
+            let playX = min(CGFloat(relativeTime / max(duration, 0.001)) * graphFrame.width, graphFrame.width - 1)
+            let originX = min(max(playX + 6, 3), graphFrame.width - labelWidth - 3)
+            return (
+                relativeTime,
+                NSValue(point: NSPoint(x: originX + labelWidth / 2, y: labelLayer.frame.midY))
+            )
+        }
+        labelLayer.position = labelPositions[0].1.pointValue
+        applyKeyframeAnimation(
+            to: labelLayer,
+            keyPath: "position",
+            values: labelPositions.map(\.1),
+            keyTimes: normalizedKeyTimes(for: labelPositions.map(\.0), duration: duration),
+            duration: duration,
+            calculationMode: .linear
         )
     }
 
@@ -2945,8 +3227,10 @@ final class VideoExportEngine {
     private static func makeTextContentLayer(frame: CGRect) -> CALayer {
         let layer = CALayer()
         layer.frame = frame
-        layer.contentsScale = renderScale
-        layer.contentsGravity = .resize
+        layer.contentsScale = textRenderScale
+        layer.contentsGravity = .center
+        layer.minificationFilter = .trilinear
+        layer.magnificationFilter = .linear
         return layer
     }
 
@@ -3410,42 +3694,33 @@ final class VideoExportEngine {
             spec.font.fontName,
             "\(spec.font.pointSize)",
             "\(spec.alignment.rawValue)",
-            "\(spec.size.width)x\(spec.size.height)"
+            "\(spec.size.width)x\(spec.size.height)",
+            "scale=\(textRenderScale)"
         ].joined(separator: "|")
 
         if let cached = cache[key] { return cached }
 
-        let width = max(Int(ceil(spec.size.width * renderScale)), 1)
-        let height = max(Int(ceil(spec.size.height * renderScale)), 1)
-        guard let colorSpace = CGColorSpace(name: CGColorSpace.sRGB),
-              let context = CGContext(
-                data: nil,
-                width: width,
-                height: height,
-                bitsPerComponent: 8,
-                bytesPerRow: 0,
-                space: colorSpace,
-                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-              ) else { return nil }
+        let alignment: Alignment
+        switch spec.alignment {
+        case .center:
+            alignment = .center
+        case .right:
+            alignment = .trailing
+        default:
+            alignment = .leading
+        }
 
-        context.scaleBy(x: renderScale, y: renderScale)
-        let graphicsContext = NSGraphicsContext(cgContext: context, flipped: true)
-        NSGraphicsContext.saveGraphicsState()
-        NSGraphicsContext.current = graphicsContext
+        let text = Text(value.text)
+            .font(.custom(spec.font.fontName, size: spec.font.pointSize))
+            .lineLimit(1)
+            .foregroundStyle(Color(nsColor: value.color.nsColor))
+            .frame(width: spec.size.width, height: spec.size.height, alignment: alignment)
 
-        let paragraph = NSMutableParagraphStyle()
-        paragraph.alignment = spec.alignment
-        paragraph.lineBreakMode = .byClipping
+        let renderer = ImageRenderer(content: text)
+        renderer.scale = textRenderScale
+        renderer.proposedSize = ProposedViewSize(spec.size)
 
-        let attributes: [NSAttributedString.Key: Any] = [
-            .font: spec.font,
-            .foregroundColor: value.color.nsColor,
-            .paragraphStyle: paragraph
-        ]
-        NSAttributedString(string: value.text, attributes: attributes).draw(in: CGRect(origin: .zero, size: spec.size))
-        NSGraphicsContext.restoreGraphicsState()
-
-        let image = context.makeImage()
+        let image = renderer.cgImage
         if let image {
             cache[key] = image
         }
@@ -3537,6 +3812,12 @@ final class VideoExportEngine {
         return abs(metadata.linearAccelerationMps2Z) / 9.81
     }
 
+    private static func combinedGForce(for metadata: SeiMetadata) -> Double {
+        let lat = lateralGForce(for: metadata)
+        let lon = longitudinalGForce(for: metadata)
+        return sqrt(lat * lat + lon * lon)
+    }
+
     // MARK: - Drawing Helpers
 
     private static func steeringWheelPath(in rect: CGRect) -> CGPath {
@@ -3582,6 +3863,98 @@ final class VideoExportEngine {
         return path
     }
 
+    private static func makeGraphBackground(
+        timeline: [(seconds: Double, metadata: SeiMetadata)],
+        duration: Double,
+        size: CGSize
+    ) -> ExportGraphBackground? {
+        guard size.width > 0, size.height > 0, duration > 0, !timeline.isEmpty else { return nil }
+
+        let sampled = sampledSEITimeline(timeline, maxPoints: max(Int(size.width * 2), 320))
+        guard sampled.count > 1 else { return nil }
+
+        let speeds = sampled.map { $0.metadata.vehicleSpeedMps }
+        let gForces = sampled.map { combinedGForce(for: $0.metadata) }
+        let maxSpeed = max(Double(speeds.max() ?? 1.0), 1.0)
+        let maxGForce = max(gForces.max() ?? 0.2, 0.2)
+        let pad: CGFloat = 6
+
+        func speedPoint(_ sample: (seconds: Double, metadata: SeiMetadata)) -> CGPoint {
+            let x = CGFloat(sample.seconds / duration) * size.width
+            let speedRatio = CGFloat(Double(sample.metadata.vehicleSpeedMps) / maxSpeed)
+            let graphHeight = size.height - pad * 2
+            let y = size.height - pad - speedRatio * graphHeight
+            return CGPoint(x: x, y: y)
+        }
+
+        func gForcePoint(_ sample: (seconds: Double, metadata: SeiMetadata)) -> CGPoint {
+            let x = CGFloat(sample.seconds / duration) * size.width
+            let gRatio = CGFloat(combinedGForce(for: sample.metadata) / maxGForce)
+            let graphHeight = size.height - pad * 2
+            let y = size.height - pad - gRatio * graphHeight
+            return CGPoint(x: x, y: y)
+        }
+
+        let fillPath = CGMutablePath()
+        fillPath.move(to: CGPoint(x: 0, y: size.height))
+        sampled.forEach { fillPath.addLine(to: speedPoint($0)) }
+        if let last = sampled.last {
+            fillPath.addLine(to: CGPoint(x: speedPoint(last).x, y: size.height))
+        }
+        fillPath.closeSubpath()
+
+        let speedLinePath = CGMutablePath()
+        for (index, sample) in sampled.enumerated() {
+            let point = speedPoint(sample)
+            if index == 0 {
+                speedLinePath.move(to: point)
+            } else {
+                speedLinePath.addLine(to: point)
+            }
+        }
+
+        let gForcePath = CGMutablePath()
+        for (index, sample) in sampled.enumerated() {
+            let point = gForcePoint(sample)
+            if index == 0 {
+                gForcePath.move(to: point)
+            } else {
+                gForcePath.addLine(to: point)
+            }
+        }
+
+        let brakePath = CGMutablePath()
+        var hasBrakeTicks = false
+        for sample in sampled where sample.metadata.brakeApplied {
+            let x = CGFloat(sample.seconds / duration) * size.width
+            brakePath.move(to: CGPoint(x: x, y: size.height - 3))
+            brakePath.addLine(to: CGPoint(x: x, y: size.height))
+            hasBrakeTicks = true
+        }
+
+        return ExportGraphBackground(
+            speedFillPath: fillPath,
+            speedLinePath: speedLinePath,
+            gForcePath: gForcePath,
+            brakeTicksPath: hasBrakeTicks ? brakePath : nil,
+            maxSpeedText: "\(Int(maxSpeed * 2.237)) mph max",
+            maxGForceText: String(format: "%.2fG max", maxGForce)
+        )
+    }
+
+    private static func sampledSEITimeline(
+        _ timeline: [(seconds: Double, metadata: SeiMetadata)],
+        maxPoints: Int
+    ) -> [(seconds: Double, metadata: SeiMetadata)] {
+        guard timeline.count > maxPoints else { return timeline }
+        let step = max(1, timeline.count / maxPoints)
+        var sampled = stride(from: 0, to: timeline.count, by: step).map { timeline[$0] }
+        if let last = timeline.last, sampled.last?.seconds != last.seconds {
+            sampled.append(last)
+        }
+        return sampled
+    }
+
     // MARK: - Route Helpers
 
     private static func sampleTimes(duration: Double, fps: Double) -> [Double] {
@@ -3592,6 +3965,14 @@ final class VideoExportEngine {
             times.append(duration)
         }
         return times
+    }
+
+    private static func trimmedSEISamples(
+        config: ExportConfig
+    ) -> [(seconds: Double, metadata: SeiMetadata)] {
+        config.seiTimeline
+            .filter { $0.seconds >= config.inPoint && $0.seconds <= config.outPoint }
+            .map { (seconds: $0.seconds - config.inPoint, metadata: $0.metadata) }
     }
 
     private static func trimmedRouteSamples(config: ExportConfig) -> [RouteSample] {
