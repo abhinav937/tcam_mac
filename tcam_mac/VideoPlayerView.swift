@@ -19,6 +19,62 @@ struct GPSTrailPoint {
     let coordinate: CLLocationCoordinate2D
 }
 
+private struct ResolvedMapRouteSample {
+    let seconds: Double
+    let coordinate: CLLocationCoordinate2D
+}
+
+private func hasValidMapCoordinate(_ coordinate: CLLocationCoordinate2D) -> Bool {
+    abs(coordinate.latitude) > 0.0001 || abs(coordinate.longitude) > 0.0001
+}
+
+private func resolvedMapRouteSamples(
+    seiTimeline: [(seconds: Double, metadata: SeiMetadata)],
+    gpsTrail: [GPSTrailPoint],
+    from: Double = -.infinity,
+    to: Double = .infinity
+) -> [ResolvedMapRouteSample] {
+    let fromSEI = seiTimeline
+        .filter { $0.seconds >= from && $0.seconds <= to }
+        .map {
+            ResolvedMapRouteSample(
+                seconds: $0.seconds,
+                coordinate: CLLocationCoordinate2D(
+                    latitude: $0.metadata.latitudeDeg,
+                    longitude: $0.metadata.longitudeDeg
+                )
+            )
+        }
+        .filter { hasValidMapCoordinate($0.coordinate) }
+
+    if fromSEI.count > 1 {
+        return fromSEI
+    }
+
+    return gpsTrail
+        .filter { $0.seconds >= from && $0.seconds <= to }
+        .map { ResolvedMapRouteSample(seconds: $0.seconds, coordinate: $0.coordinate) }
+        .filter { hasValidMapCoordinate($0.coordinate) }
+}
+
+private func visibleResolvedMapTrail(
+    in route: [ResolvedMapRouteSample],
+    upTo absoluteTime: Double
+) -> [CLLocationCoordinate2D] {
+    guard !route.isEmpty else { return [] }
+    var lo = 0
+    var hi = route.count
+    while lo < hi {
+        let mid = (lo + hi) / 2
+        if route[mid].seconds <= absoluteTime {
+            lo = mid + 1
+        } else {
+            hi = mid
+        }
+    }
+    return route[0..<lo].map(\.coordinate)
+}
+
 // MARK: - View Mode
 
 enum ViewMode: String, CaseIterable {
@@ -161,6 +217,7 @@ struct VideoPlayerView: View {
                     if showMap {
                         LiveMapView(
                             gps: interpolatedGPS,
+                            seiTimeline: seiTimeline,
                             gpsTrail: gpsTrail,
                             currentSeconds: currentPlayerSeconds,
                             mapStyle: mapStyle,
@@ -1479,6 +1536,7 @@ final class PlayerSurfaceNSView: NSView {
 
 struct LiveMapView: View {
     let gps: GPSPoint?
+    let seiTimeline: [(seconds: Double, metadata: SeiMetadata)]
     let gpsTrail: [GPSTrailPoint]
     let currentSeconds: Double
     let mapStyle: MapStyleOption
@@ -1487,13 +1545,12 @@ struct LiveMapView: View {
     @State private var cameraPosition: MapCameraPosition = .automatic
     @State private var hasSetInitialPosition = false
 
+    private var routeSamples: [ResolvedMapRouteSample] {
+        resolvedMapRouteSamples(seiTimeline: seiTimeline, gpsTrail: gpsTrail)
+    }
+
     private var visibleTrail: [CLLocationCoordinate2D] {
-        var lo = 0, hi = gpsTrail.count
-        while lo < hi {
-            let mid = (lo + hi) / 2
-            if gpsTrail[mid].seconds <= currentSeconds { lo = mid + 1 } else { hi = mid }
-        }
-        return gpsTrail[0..<lo].map { $0.coordinate }
+        visibleResolvedMapTrail(in: routeSamples, upTo: currentSeconds)
     }
 
     var body: some View {
@@ -1579,7 +1636,7 @@ struct LiveMapView: View {
     }
 
     private func fitTrailBounds() {
-        let coords = gpsTrail.map { $0.coordinate }
+        let coords = routeSamples.map(\.coordinate)
         guard !coords.isEmpty else { return }
         let lats = coords.map { $0.latitude }
         let lons = coords.map { $0.longitude }
@@ -1644,6 +1701,7 @@ struct CropExportSheet: View {
     @State private var exportProgress: Float = 0
     @State private var exportError: String? = nil
     @State private var exportDone = false
+    @State private var exportShowsMap: Bool
 
     init(clip: TeslaClip, viewMode: ViewMode, players: [CameraChannel: AVPlayer],
          seiTimeline: [(seconds: Double, metadata: SeiMetadata)],
@@ -1659,6 +1717,7 @@ struct CropExportSheet: View {
         self.mapFollowsVehicle = mapFollowsVehicle
         self.showMap = showMap
         _outPoint = State(initialValue: totalDuration)
+        _exportShowsMap = State(initialValue: showMap)
     }
 
     private var selectedDuration: Double { max(0, outPoint - inPoint) }
@@ -1769,15 +1828,27 @@ struct CropExportSheet: View {
 
             Divider()
 
-            // Overlays info
-            VStack(alignment: .leading, spacing: 6) {
+            // Export overlays
+            VStack(alignment: .leading, spacing: 10) {
                 Text("Burned-in Overlays").font(.headline)
+
                 HStack(spacing: 16) {
                     Label("Live telemetry HUD", systemImage: "gauge.with.dots.needle.67percent")
                         .font(.caption).foregroundStyle(.secondary)
-                    Label("Live map route + marker", systemImage: "map")
+                    Label(exportShowsMap ? "Live map route + marker" : "Map excluded from export", systemImage: exportShowsMap ? "map" : "map.slash")
                         .font(.caption).foregroundStyle(.secondary)
                 }
+
+                Toggle(isOn: $exportShowsMap) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Include map overlay")
+                            .font(.callout.weight(.semibold))
+                        Text("Exports the route map and vehicle marker in the top-right corner.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .toggleStyle(.switch)
             }
 
             Spacer()
@@ -1893,7 +1964,7 @@ struct CropExportSheet: View {
             gpsTrail: gpsTrail,
             mapStyle: mapStyle,
             mapFollowsVehicle: mapFollowsVehicle,
-            showMap: showMap,
+            showMap: exportShowsMap,
             outputURL: outputURL
         )
 
@@ -1938,12 +2009,13 @@ final class VideoExportEngine {
     static let outputSize = CGSize(width: 1920, height: 1080)
 
     private static let exportFPS: Double = 30
-    private static let mapFPS: Double = 15
+    private static let mapFPS: Double = 30
     private static let renderScale: CGFloat = 2
     private static let hudFrame = CGRect(x: 24, y: 30, width: 340, height: 128)
+    private static let mapPadding: CGFloat = 16
     private static let mapFrame = CGRect(
-        x: outputSize.width - 280 - (Layout.chipSpacing * 2),
-        y: Layout.chipSpacing * 2 + 8,
+        x: outputSize.width - 280 - mapPadding,
+        y: mapPadding + 8,
         width: 280,
         height: 210
     )
@@ -2453,6 +2525,157 @@ final class VideoExportEngine {
 
     // MARK: - Map Overlay
 
+    // Follow-cam support types
+
+    private struct FollowCamWaypoint {
+        let seconds: Double
+        let coordinate: CLLocationCoordinate2D
+    }
+
+    private struct WaypointSnapshot {
+        let seconds: Double
+        let coordinate: CLLocationCoordinate2D   // center of this snapshot (the vehicle's GPS position at snapshot time)
+        let snapshot: MKMapSnapshotter.Snapshot
+        let image: CGImage?
+    }
+
+    /// Cluster route samples by distance so we generate one map snapshot per ~50 m of travel.
+    private static func collectFollowCamWaypoints(
+        route: [RouteSample],
+        distanceThreshold: Double = 50
+    ) -> [FollowCamWaypoint] {
+        guard !route.isEmpty else { return [] }
+        var waypoints: [FollowCamWaypoint] = []
+        var lastCoord: CLLocationCoordinate2D? = nil
+        for sample in route {
+            let coord = sample.coordinate
+            if let last = lastCoord {
+                let dlat = (coord.latitude  - last.latitude)  * 111_000
+                let dlon = (coord.longitude - last.longitude) * 111_000 * cos(last.latitude * .pi / 180)
+                if sqrt(dlat * dlat + dlon * dlon) < distanceThreshold { continue }
+            }
+            waypoints.append(FollowCamWaypoint(seconds: sample.seconds, coordinate: coord))
+            lastCoord = coord
+        }
+        // Always include first and last points so we have coverage at clip boundaries.
+        if let first = route.first, waypoints.first?.seconds != first.seconds {
+            waypoints.insert(FollowCamWaypoint(seconds: first.seconds, coordinate: first.coordinate), at: 0)
+        }
+        if let last = route.last, waypoints.last?.seconds != last.seconds {
+            waypoints.append(FollowCamWaypoint(seconds: last.seconds, coordinate: last.coordinate))
+        }
+        return waypoints
+    }
+
+    /// Take one MKMapSnapshotter snapshot per waypoint, centred at 350 m — identical zoom to LiveMapView.
+    @MainActor
+    private static func makeFollowCamSnapshots(
+        waypoints: [FollowCamWaypoint],
+        mapStyle: MapStyleOption
+    ) async -> [WaypointSnapshot] {
+        var result: [WaypointSnapshot] = []
+        for waypoint in waypoints {
+            let options = MKMapSnapshotter.Options()
+            options.camera = MKMapCamera(
+                lookingAtCenter: waypoint.coordinate,
+                fromDistance: 350,
+                pitch: 0,
+                heading: 0
+            )
+            options.size = CGSize(width: mapFrame.width * renderScale, height: mapFrame.height * renderScale)
+            options.mapType = mapType(for: mapStyle)
+            options.showsBuildings = false
+            do {
+                let snap = try await MKMapSnapshotter(options: options).start()
+                result.append(WaypointSnapshot(seconds: waypoint.seconds, coordinate: waypoint.coordinate, snapshot: snap, image: cgImage(from: snap.image)))
+            } catch {
+                // If satellite tiles fail, try standard for this waypoint.
+                if mapStyle == .satellite {
+                    let fb = MKMapSnapshotter.Options()
+                    fb.camera = options.camera
+                    fb.size = options.size
+                    fb.mapType = .standard
+                    fb.showsBuildings = false
+                    if let snap = try? await MKMapSnapshotter(options: fb).start() {
+                        result.append(WaypointSnapshot(seconds: waypoint.seconds, coordinate: waypoint.coordinate, snapshot: snap, image: cgImage(from: snap.image)))
+                    }
+                }
+            }
+        }
+        return result
+    }
+
+    /// Approximate squared geographic distance between two coordinates (metres²), fast enough for comparisons.
+    private static func geoDistSq(_ a: CLLocationCoordinate2D, _ b: CLLocationCoordinate2D) -> Double {
+        let dlat = (a.latitude  - b.latitude)  * 111_000
+        let dlon = (a.longitude - b.longitude) * 111_000 * cos(a.latitude * .pi / 180)
+        return dlat * dlat + dlon * dlon
+    }
+
+    /// Build MapFrameSamples using per-waypoint follow-cam snapshots.
+    ///
+    /// Snapshot selection is **position-based** (nearest centre coordinate to the vehicle's current
+    /// GPS position), NOT time-based. Time-based selection breaks when the vehicle is stationary: the
+    /// mid-point between two waypoints in time would switch to the next snapshot while the car hasn't
+    /// moved yet, showing the wrong map area.
+    private static func makeFollowCamMapFrameSamples(
+        duration: Double,
+        absoluteStart: Double,
+        waypointSnapshots: [WaypointSnapshot],
+        route: [RouteSample],
+        seiTimeline: [(seconds: Double, metadata: SeiMetadata)]
+    ) -> [MapFrameSample] {
+        guard !waypointSnapshots.isEmpty else { return [] }
+
+        // Approximate viewport radius at 350 m altitude: visible area ≈ 400 m radius.
+        // We keep a generous 600 m window so the trail visibly enters from the edge.
+        let trailWindowMetres: Double = 600
+
+        return sampleTimes(duration: duration, fps: mapFPS).map { relativeTime in
+            let absoluteTime = absoluteStart + relativeTime
+            let state = mapState(at: absoluteTime, seiTimeline: seiTimeline, route: route)
+
+            // ── Pick the snapshot whose centre is geographically closest to the vehicle ──
+            // Falls back to nearest-in-time when no GPS is available.
+            let ws: WaypointSnapshot
+            if let vehicleCoord = state?.coordinate {
+                ws = waypointSnapshots.min(by: {
+                    geoDistSq($0.coordinate, vehicleCoord) < geoDistSq($1.coordinate, vehicleCoord)
+                })!
+            } else {
+                ws = waypointSnapshots.min(by: {
+                    abs($0.seconds - absoluteTime) < abs($1.seconds - absoluteTime)
+                })!
+            }
+
+            // ── Build trail: only include GPS points within the viewport window ──
+            // Filtering out far-away points prevents extreme-coordinate path segments
+            // that can cause CAShapeLayer rendering artefacts.
+            let allTrailCoords = visibleTrail(in: route, upTo: absoluteTime)
+            let trailCoords: [CLLocationCoordinate2D]
+            if let vehicleCoord = state?.coordinate {
+                let windowSq = trailWindowMetres * trailWindowMetres
+                trailCoords = allTrailCoords.filter { geoDistSq($0, vehicleCoord) <= windowSq }
+            } else {
+                trailCoords = allTrailCoords
+            }
+
+            return MapFrameSample(
+                relativeTime: relativeTime,
+                image: ws.image,
+                trailPath: makeTrailPath(
+                    snapshot: ws.snapshot,
+                    coordinates: trailCoords,
+                    canvasHeight: mapFrame.height
+                ),
+                markerPoint: state.map {
+                    mapOverlayPoint(ws.snapshot.point(for: $0.coordinate), canvasHeight: mapFrame.height)
+                },
+                heading: state?.heading ?? 0
+            )
+        }
+    }
+
     @MainActor
     private static func makeMapOverlayLayer(
         config: ExportConfig,
@@ -2463,20 +2686,6 @@ final class VideoExportEngine {
         guard !route.isEmpty else {
             return makeUnavailableMapLayer()
         }
-
-        // FORCE OVERVIEW MODE FOR EXPORT -> this is what fixes the frozen map
-        let exportConfig = ExportConfig(
-            clip: config.clip,
-            viewMode: config.viewMode,
-            inPoint: config.inPoint,
-            outPoint: config.outPoint,
-            seiTimeline: config.seiTimeline,
-            gpsTrail: config.gpsTrail,
-            mapStyle: config.mapStyle,
-            mapFollowsVehicle: false,
-            showMap: config.showMap,
-            outputURL: config.outputURL
-        )
 
         let shadowLayer = CALayer()
         shadowLayer.frame = mapFrame
@@ -2490,7 +2699,6 @@ final class VideoExportEngine {
         clipLayer.frame = shadowLayer.bounds
         clipLayer.cornerRadius = mapCornerRadius
         clipLayer.masksToBounds = true
-        clipLayer.isGeometryFlipped = true
         shadowLayer.addSublayer(clipLayer)
 
         let backgroundLayer = CALayer()
@@ -2519,17 +2727,39 @@ final class VideoExportEngine {
         border.lineWidth = 1
         clipLayer.addSublayer(border)
 
-        let samples = try await makeMapFrameSamples(
-            config: exportConfig,
-            duration: duration,
-            route: route,
-            absoluteStart: absoluteStart
-        )
+        // Generate frame samples: follow-cam (per-waypoint snapshots at 350 m zoom) or full-route overview.
+        let samples: [MapFrameSample]
+        if config.mapFollowsVehicle {
+            let waypoints = collectFollowCamWaypoints(route: route)
+            guard !waypoints.isEmpty else { return makeUnavailableMapLayer() }
+            let waypointSnapshots = await makeFollowCamSnapshots(waypoints: waypoints, mapStyle: config.mapStyle)
+            guard !waypointSnapshots.isEmpty else { return makeUnavailableMapLayer() }
+            samples = makeFollowCamMapFrameSamples(
+                duration: duration,
+                absoluteStart: absoluteStart,
+                waypointSnapshots: waypointSnapshots,
+                route: route,
+                seiTimeline: config.seiTimeline
+            )
+        } else {
+            let overview = try await makeOverviewSnapshot(
+                route: route,
+                mapStyle: config.mapStyle,
+                size: CGSize(width: mapFrame.width * renderScale, height: mapFrame.height * renderScale)
+            )
+            let overviewImage = cgImage(from: overview.image)
+            samples = makeOverviewMapFrameSamples(
+                duration: duration,
+                absoluteStart: absoluteStart,
+                route: route,
+                overviewSnapshot: overview,
+                overviewImage: overviewImage,
+                seiTimeline: config.seiTimeline
+            )
+        }
         guard let first = samples.first else { return nil }
 
-        if let image = first.image {
-            backgroundLayer.contents = image
-        }
+        backgroundLayer.contents = first.image
         trailLayer.path = first.trailPath
         if let markerPoint = first.markerPoint {
             markerLayer.position = markerPoint
@@ -2539,6 +2769,7 @@ final class VideoExportEngine {
         }
         markerLayer.setAffineTransform(CGAffineTransform(rotationAngle: CGFloat(first.heading * .pi / 180)))
 
+        applyBackgroundImageAnimation(to: backgroundLayer, samples: samples, duration: duration)
         applyOptionalPathAnimation(to: trailLayer, samples: samples, duration: duration)
         applyMarkerAnimations(to: markerLayer, samples: samples, duration: duration)
 
@@ -2579,58 +2810,28 @@ final class VideoExportEngine {
         return shadowLayer
     }
 
-    @MainActor
-    private static func makeMapFrameSamples(
-        config: ExportConfig,
+    private static func makeOverviewMapFrameSamples(
         duration: Double,
+        absoluteStart: Double,
         route: [RouteSample],
-        absoluteStart: Double
-    ) async throws -> [MapFrameSample] {
+        overviewSnapshot: MKMapSnapshotter.Snapshot,
+        overviewImage: CGImage?,
+        seiTimeline: [(seconds: Double, metadata: SeiMetadata)]
+    ) -> [MapFrameSample] {
         let frameTimes = sampleTimes(duration: duration, fps: mapFPS)
-        let snapshotSize = CGSize(width: mapFrame.width * renderScale, height: mapFrame.height * renderScale)
-
-        if config.mapFollowsVehicle {
-            var samples: [MapFrameSample] = []
-            for relativeTime in frameTimes {
-                let absoluteTime = absoluteStart + relativeTime
-                guard let state = mapState(at: absoluteTime, config: config, route: route) else {
-                    samples.append(MapFrameSample(relativeTime: relativeTime, image: nil, trailPath: nil, markerPoint: nil, heading: 0))
-                    continue
-                }
-
-                let snapshot = try await makeFollowSnapshot(
-                    coordinate: state.coordinate,
-                    mapStyle: config.mapStyle,
-                    size: snapshotSize
-                )
-                let trailPath = makeTrailPath(
-                    snapshot: snapshot,
-                    coordinates: visibleTrail(in: route, upTo: absoluteTime)
-                )
-                let markerPoint = scaledPoint(snapshot.point(for: state.coordinate))
-
-                samples.append(MapFrameSample(
-                    relativeTime: relativeTime,
-                    image: cgImage(from: snapshot.image),
-                    trailPath: trailPath,
-                    markerPoint: markerPoint,
-                    heading: state.heading
-                ))
-            }
-            return samples
-        }
-
-        let overview = try await makeOverviewSnapshot(route: route, mapStyle: config.mapStyle, size: snapshotSize)
-        let overviewImage = cgImage(from: overview.image)
 
         return frameTimes.map { relativeTime in
             let absoluteTime = absoluteStart + relativeTime
-            let state = mapState(at: absoluteTime, config: config, route: route)
+            let state = mapState(at: absoluteTime, seiTimeline: seiTimeline, route: route)
             return MapFrameSample(
                 relativeTime: relativeTime,
                 image: overviewImage,
-                trailPath: makeTrailPath(snapshot: overview, coordinates: visibleTrail(in: route, upTo: absoluteTime)),
-                markerPoint: state.map { scaledPoint(overview.point(for: $0.coordinate)) },
+                trailPath: makeTrailPath(
+                    snapshot: overviewSnapshot,
+                    coordinates: visibleTrail(in: route, upTo: absoluteTime),
+                    canvasHeight: mapFrame.height
+                ),
+                markerPoint: state.map { mapOverlayPoint(overviewSnapshot.point(for: $0.coordinate), canvasHeight: mapFrame.height) },
                 heading: state?.heading ?? 0
             )
         }
@@ -2660,44 +2861,16 @@ final class VideoExportEngine {
         }
     }
 
-    private static func makeFollowSnapshot(
-        coordinate: CLLocationCoordinate2D,
-        mapStyle: MapStyleOption,
-        size: CGSize
-    ) async throws -> MKMapSnapshotter.Snapshot {
-        let options = MKMapSnapshotter.Options()
-        options.size = size
-        options.mapType = mapType(for: mapStyle)
-        options.showsBuildings = false
-        options.camera = MKMapCamera(
-            lookingAtCenter: coordinate,
-            fromDistance: 350,
-            pitch: 0,
-            heading: 0
-        )
-        do {
-            return try await MKMapSnapshotter(options: options).start()
-        } catch {
-            guard mapStyle == .satellite else { throw error }
-
-            let fallbackOptions = MKMapSnapshotter.Options()
-            fallbackOptions.size = size
-            fallbackOptions.mapType = .standard
-            fallbackOptions.showsBuildings = false
-            fallbackOptions.camera = options.camera
-            return try await MKMapSnapshotter(options: fallbackOptions).start()
-        }
-    }
-
     private static func makeTrailPath(
         snapshot: MKMapSnapshotter.Snapshot,
-        coordinates: [CLLocationCoordinate2D]
+        coordinates: [CLLocationCoordinate2D],
+        canvasHeight: CGFloat
     ) -> CGPath? {
         guard coordinates.count > 1 else { return nil }
 
         let path = CGMutablePath()
         for (index, coordinate) in coordinates.enumerated() {
-            let point = scaledPoint(snapshot.point(for: coordinate))
+            let point = mapOverlayPoint(snapshot.point(for: coordinate), canvasHeight: canvasHeight)
             if index == 0 {
                 path.move(to: point)
             } else {
@@ -2707,8 +2880,9 @@ final class VideoExportEngine {
         return path
     }
 
-    private static func scaledPoint(_ point: CGPoint) -> CGPoint {
-        CGPoint(x: point.x / renderScale, y: point.y / renderScale)
+    private static func mapOverlayPoint(_ point: CGPoint, canvasHeight: CGFloat) -> CGPoint {
+        let scaledY = point.y / renderScale
+        return CGPoint(x: point.x / renderScale, y: canvasHeight - scaledY)
     }
 
     private static func hudRect(x: CGFloat, y: CGFloat, width: CGFloat, height: CGFloat) -> CGRect {
@@ -3087,6 +3261,31 @@ final class VideoExportEngine {
         }
     }
 
+    /// Animates `backgroundLayer.contents` when the map background changes across frames (follow-cam).
+    /// For the overview case all frames share the same CGImage instance, so compactAnyFrames returns
+    /// a single entry and we exit early — no animation overhead.
+    @MainActor
+    private static func applyBackgroundImageAnimation(
+        to layer: CALayer,
+        samples: [MapFrameSample],
+        duration: Double
+    ) {
+        let imageFrames: [(Double, Any)] = samples.compactMap { sample in
+            guard let image = sample.image else { return nil }
+            return (sample.relativeTime, image as Any)
+        }
+        let compact = compactAnyFrames(imageFrames)
+        guard compact.count > 1 else { return }
+        applyKeyframeAnimation(
+            to: layer,
+            keyPath: "contents",
+            values: compact.map(\.value),
+            keyTimes: normalizedKeyTimes(for: compact.map(\.time), duration: duration),
+            duration: duration,
+            calculationMode: .discrete
+        )
+    }
+
     @MainActor
     private static func applyOptionalPathAnimation(
         to layer: CAShapeLayer,
@@ -3396,50 +3595,31 @@ final class VideoExportEngine {
     }
 
     private static func trimmedRouteSamples(config: ExportConfig) -> [RouteSample] {
-        let fromTrail = config.gpsTrail
-            .filter { $0.seconds >= config.inPoint && $0.seconds <= config.outPoint }
-            .map { RouteSample(seconds: $0.seconds, coordinate: $0.coordinate) }
-            .filter { abs($0.coordinate.latitude) > 0.0001 || abs($0.coordinate.longitude) > 0.0001 }
-
-        if !fromTrail.isEmpty {
-            return fromTrail
-        }
-
-        return config.seiTimeline
-            .filter { $0.seconds >= config.inPoint && $0.seconds <= config.outPoint }
-            .map {
-                RouteSample(
-                    seconds: $0.seconds,
-                    coordinate: CLLocationCoordinate2D(latitude: $0.metadata.latitudeDeg, longitude: $0.metadata.longitudeDeg)
-                )
-            }
-            .filter { abs($0.coordinate.latitude) > 0.0001 || abs($0.coordinate.longitude) > 0.0001 }
+        resolvedMapRouteSamples(
+            seiTimeline: config.seiTimeline,
+            gpsTrail: config.gpsTrail,
+            from: config.inPoint,
+            to: config.outPoint
+        )
+        .map { RouteSample(seconds: $0.seconds, coordinate: $0.coordinate) }
     }
 
     private static func visibleTrail(
         in route: [RouteSample],
         upTo absoluteTime: Double
     ) -> [CLLocationCoordinate2D] {
-        guard !route.isEmpty else { return [] }
-        var lo = 0
-        var hi = route.count
-        while lo < hi {
-            let mid = (lo + hi) / 2
-            if route[mid].seconds <= absoluteTime {
-                lo = mid + 1
-            } else {
-                hi = mid
-            }
-        }
-        return route[0..<lo].map(\.coordinate)
+        visibleResolvedMapTrail(
+            in: route.map { ResolvedMapRouteSample(seconds: $0.seconds, coordinate: $0.coordinate) },
+            upTo: absoluteTime
+        )
     }
 
     private static func mapState(
         at absoluteTime: Double,
-        config: ExportConfig,
+        seiTimeline: [(seconds: Double, metadata: SeiMetadata)],
         route: [RouteSample]
     ) -> MapState? {
-        if let gps = interpolatedGPSPoint(at: absoluteTime, in: config.seiTimeline) {
+        if let gps = interpolatedGPSPoint(at: absoluteTime, in: seiTimeline) {
             return MapState(
                 coordinate: CLLocationCoordinate2D(latitude: gps.latitude, longitude: gps.longitude),
                 heading: gps.heading
