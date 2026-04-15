@@ -627,20 +627,24 @@ struct VideoPlayerView: View {
     private func setupPlayersAndSEI() {
         let sortedMoments = clip.moments.sorted { $0.timestamp < $1.timestamp }
 
-        for channel in CameraChannel.allCases {
-            let urls = sortedMoments.compactMap { $0.files[channel] }
-            if let player = makeStitchedPlayer(from: urls) {
-                players[channel] = player
+        Task {
+            var builtPlayers: [CameraChannel: AVPlayer] = [:]
+
+            for channel in CameraChannel.allCases {
+                let urls = sortedMoments.compactMap { $0.files[channel] }
+                if let player = await makeStitchedPlayer(from: urls) {
+                    builtPlayers[channel] = player
+                }
             }
-        }
-        // Async duration load — AVMutableComposition.duration returns zero synchronously
-        if let master = players[.front] ?? players.values.first {
-            Task {
-                if let d = try? await master.currentItem?.asset.load(.duration) {
-                    let secs = CMTimeGetSeconds(d)
-                    if secs.isFinite && secs > 0 {
-                        await MainActor.run { clipDuration = max(clipDuration, secs) }
-                    }
+
+            players = builtPlayers
+
+            // Async duration load — AVMutableComposition.duration returns zero synchronously
+            if let master = builtPlayers[.front] ?? builtPlayers.values.first,
+               let d = try? await master.currentItem?.asset.load(.duration) {
+                let secs = CMTimeGetSeconds(d)
+                if secs.isFinite && secs > 0 {
+                    clipDuration = max(clipDuration, secs)
                 }
             }
         }
@@ -692,7 +696,7 @@ struct VideoPlayerView: View {
         players.values.forEach { $0.pause() }
     }
 
-    private func makeStitchedPlayer(from urls: [URL]) -> AVPlayer? {
+    private func makeStitchedPlayer(from urls: [URL]) async -> AVPlayer? {
         guard !urls.isEmpty else { return nil }
         if urls.count == 1 { return AVPlayer(url: urls[0]) }
 
@@ -710,15 +714,16 @@ struct VideoPlayerView: View {
 
         for url in urls {
             let asset = AVURLAsset(url: url)
-            let timeRange = CMTimeRange(start: .zero, duration: asset.duration)
+            guard let assetDuration = try? await asset.load(.duration) else { continue }
+            let timeRange = CMTimeRange(start: .zero, duration: assetDuration)
             guard timeRange.duration.isNumeric && timeRange.duration > .zero else { continue }
 
-            if let sourceVideo = asset.tracks(withMediaType: .video).first {
+            if let sourceVideo = try? await asset.loadTracks(withMediaType: .video).first {
                 do { try videoTrack.insertTimeRange(timeRange, of: sourceVideo, at: cursor); hasVideo = true }
                 catch { continue }
             } else { continue }
 
-            if let sourceAudio = asset.tracks(withMediaType: .audio).first, let audioTrack {
+            if let sourceAudio = try? await asset.loadTracks(withMediaType: .audio).first, let audioTrack {
                 try? audioTrack.insertTimeRange(timeRange, of: sourceAudio, at: cursor)
             }
             cursor = CMTimeAdd(cursor, timeRange.duration)
@@ -1399,14 +1404,10 @@ struct CustomControlBar: View {
     }
 
     private func loadDuration() {
-        if let item = player.currentItem {
-            let d = CMTimeGetSeconds(item.asset.duration)
-            if d.isFinite && d > 0 { duration = d; return }
-        }
         Task {
             if let d = try? await player.currentItem?.asset.load(.duration) {
                 let secs = CMTimeGetSeconds(d)
-                if secs.isFinite && secs > 0 { await MainActor.run { duration = secs } }
+                if secs.isFinite && secs > 0 { duration = secs }
             }
         }
     }
@@ -2297,11 +2298,7 @@ final class VideoExportEngine {
         guard compositionDuration > .zero else {
             throw ExportError.exportFailed("Export composition is empty")
         }
-        let instruction = AVMutableVideoCompositionInstruction()
-        instruction.timeRange = CMTimeRange(start: .zero, duration: compositionDuration)
-        instruction.backgroundColor = NSColor.black.cgColor
-
-        var layerInstructions: [AVMutableVideoCompositionLayerInstruction] = []
+        var layerInstructions: [AVVideoCompositionLayerInstruction] = []
 
         for channel in channels {
             guard let compTrack = trackMap[channel] else { continue }
@@ -2322,12 +2319,18 @@ final class VideoExportEngine {
                 .concatenating(CGAffineTransform(scaleX: scale, y: scale))
                 .concatenating(CGAffineTransform(translationX: tx, y: ty))
 
-            let layerInstruction = AVMutableVideoCompositionLayerInstruction(assetTrack: compTrack)
-            layerInstruction.setTransform(transform, at: .zero)
-            layerInstructions.append(layerInstruction)
+            var layerInstructionConfig = AVVideoCompositionLayerInstruction.Configuration(trackID: compTrack.trackID)
+            layerInstructionConfig.setTransform(transform, at: .zero)
+            layerInstructions.append(AVVideoCompositionLayerInstruction(configuration: layerInstructionConfig))
         }
 
-        instruction.layerInstructions = layerInstructions
+        let instructionConfig = AVVideoCompositionInstruction.Configuration(
+            backgroundColor: NSColor.black.cgColor,
+            enablePostProcessing: true,
+            layerInstructions: layerInstructions,
+            timeRange: CMTimeRange(start: .zero, duration: compositionDuration)
+        )
+        let instruction = AVVideoCompositionInstruction(configuration: instructionConfig)
 
         let (parentLayer, videoLayer) = try await buildOverlayLayers(
             config: config,
@@ -2335,14 +2338,17 @@ final class VideoExportEngine {
             absoluteStart: exportStart
         )
 
-        let videoComposition = AVMutableVideoComposition()
-        videoComposition.renderSize = outputSize
-        videoComposition.frameDuration = CMTime(value: 1, timescale: Int32(exportFPS))
-        videoComposition.instructions = [instruction]
-        videoComposition.animationTool = AVVideoCompositionCoreAnimationTool(
+        let animationTool = AVVideoCompositionCoreAnimationTool(
             postProcessingAsVideoLayer: videoLayer,
             in: parentLayer
         )
+        let videoCompositionConfig = AVVideoComposition.Configuration(
+            animationTool: animationTool,
+            frameDuration: CMTime(value: 1, timescale: Int32(exportFPS)),
+            instructions: [instruction],
+            renderSize: outputSize
+        )
+        let videoComposition = AVVideoComposition(configuration: videoCompositionConfig)
 
         guard let session = AVAssetExportSession(
             asset: composition,
@@ -2353,38 +2359,26 @@ final class VideoExportEngine {
             try? FileManager.default.removeItem(at: config.outputURL)
         }
 
-        let isValid = try await videoComposition.isValid(
-            for: composition,
-            timeRange: instruction.timeRange,
-            validationDelegate: nil
-        )
-        guard isValid else {
-            throw ExportError.exportFailed("Video composition validation failed")
-        }
-
         session.videoComposition = videoComposition
-        session.outputURL = config.outputURL
-        session.outputFileType = .mp4
-
-        let timer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { _ in
-            progress(session.progress)
-        }
-        RunLoop.main.add(timer, forMode: .common)
-
-        await session.export()
-        timer.invalidate()
+        async let progressUpdates: Void = observeExportProgress(for: session, progress: progress)
+        try await session.export(to: config.outputURL, as: .mp4)
+        _ = await progressUpdates
         progress(1)
+    }
 
-        if let error = session.error as NSError? {
-            let underlying = error.userInfo[NSUnderlyingErrorKey] as? NSError
-            let underlyingText = underlying.map { " | underlying=\($0.domain) \($0.code): \($0.localizedDescription)" } ?? ""
-            throw ExportError.exportFailed(
-                "Export failed [status=\(session.status.rawValue)] \(error.domain) \(error.code): \(error.localizedDescription)\(underlyingText)"
-            )
-        }
-
-        guard session.status == .completed else {
-            throw ExportError.exportFailed("Export failed [status=\(session.status.rawValue)] with no AVFoundation error")
+    private static func observeExportProgress(
+        for session: AVAssetExportSession,
+        progress: @escaping (Float) -> Void
+    ) async {
+        for await state in session.states(updateInterval: 0.2) {
+            switch state {
+            case .pending, .waiting:
+                break
+            case .exporting(progress: let exportProgress):
+                progress(Float(exportProgress.fractionCompleted))
+            @unknown default:
+                break
+            }
         }
     }
 

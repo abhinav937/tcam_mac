@@ -758,12 +758,12 @@ struct ClipPreviewCard: View {
 // MARK: - Thumbnail Cache
 
 private final class ThumbnailCache: @unchecked Sendable {
-    static let shared = ThumbnailCache()
+    nonisolated static let shared = ThumbnailCache()
 
     private let memCache = NSCache<NSString, NSImage>()
     private let diskCacheDir: URL
 
-    private init() {
+    nonisolated private init() {
         let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("tcam_thumbs")
         try? FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
         diskCacheDir = tmp
@@ -771,7 +771,7 @@ private final class ThumbnailCache: @unchecked Sendable {
         memCache.totalCostLimit = 120 * 1024 * 1024 // 120 MB
     }
 
-    func image(for key: String) -> NSImage? {
+    nonisolated func image(for key: String) -> NSImage? {
         if let mem = memCache.object(forKey: key as NSString) { return mem }
         let diskURL = diskCacheDir.appendingPathComponent(key).appendingPathExtension("jpg")
         guard let data = try? Data(contentsOf: diskURL),
@@ -780,7 +780,7 @@ private final class ThumbnailCache: @unchecked Sendable {
         return img
     }
 
-    func store(_ image: NSImage, for key: String) {
+    nonisolated func store(_ image: NSImage, for key: String) {
         memCache.setObject(image, forKey: key as NSString)
         let diskURL = diskCacheDir.appendingPathComponent(key).appendingPathExtension("jpg")
         guard !FileManager.default.fileExists(atPath: diskURL.path) else { return }
@@ -791,7 +791,7 @@ private final class ThumbnailCache: @unchecked Sendable {
         }
     }
 
-    static func key(for url: URL) -> String {
+    nonisolated static func key(for url: URL) -> String {
         let hash = abs(url.path.hashValue)
         return "\(hash)"
     }
@@ -834,7 +834,7 @@ private struct ClipThumbnailView<Placeholder: View>: View {
         }
     }
 
-    private static func loadImage(from url: URL) async -> Image? {
+    private nonisolated static func loadImage(from url: URL) async -> Image? {
         let key = ThumbnailCache.key(for: url)
 
         // 1. Memory / disk cache hit — instant
@@ -871,9 +871,8 @@ private struct ClipThumbnailView<Placeholder: View>: View {
                 .zero
             ]
             for time in probeTimes {
-                var actualTime = CMTime.zero
-                if let cgImage = try? generator.copyCGImage(at: time, actualTime: &actualTime) {
-                    let nsImage = NSImage(cgImage: cgImage, size: .zero)
+                if let result = try? await generator.image(at: time) {
+                    let nsImage = NSImage(cgImage: result.image, size: .zero)
                     ThumbnailCache.shared.store(nsImage, for: key)
                     return Image(nsImage: nsImage)
                 }
@@ -885,7 +884,7 @@ private struct ClipThumbnailView<Placeholder: View>: View {
 
 private extension NSImage {
     /// Returns a copy scaled so the longest side is ≤ maxDimension.
-    func resized(toMaxDimension max: CGFloat) -> NSImage {
+    nonisolated func resized(toMaxDimension max: CGFloat) -> NSImage {
         let sz = size
         guard sz.width > max || sz.height > max else { return self }
         let scale = max / Swift.max(sz.width, sz.height)
@@ -968,7 +967,7 @@ private actor DurationResolver {
 
 private class TeslaCamParser {
 
-    static func parseFolder(_ rootURL: URL) async -> [SidebarSection: [TeslaClip]] {
+    nonisolated static func parseFolder(_ rootURL: URL) async -> [SidebarSection: [TeslaClip]] {
         let fm = FileManager.default
         var result: [SidebarSection: [TeslaClip]] = [:]
         let durationResolver = DurationResolver()
@@ -991,7 +990,7 @@ private class TeslaCamParser {
         return result
     }
 
-    private static func parseRecent(
+    private nonisolated static func parseRecent(
         _ folderURL: URL,
         durationResolver: DurationResolver
     ) async -> [TeslaClip] {
@@ -1033,7 +1032,7 @@ private class TeslaCamParser {
         return clips.sorted { $0.date > $1.date }
     }
 
-    private static func parseEventFolders(
+    private nonisolated static func parseEventFolders(
         _ parentURL: URL,
         type: SidebarSection,
         durationResolver: DurationResolver
@@ -1057,7 +1056,7 @@ private class TeslaCamParser {
         return clips.sorted { $0.date > $1.date }
     }
 
-    private static func parseEventFolder(
+    private nonisolated static func parseEventFolder(
         _ folderURL: URL,
         type: SidebarSection,
         durationResolver: DurationResolver
@@ -1099,7 +1098,7 @@ private class TeslaCamParser {
         )
     }
 
-    private static func clipDurationSeconds(
+    private nonisolated static func clipDurationSeconds(
         for moments: [TeslaMoment],
         durationResolver: DurationResolver
     ) async -> Double {
@@ -1111,14 +1110,14 @@ private class TeslaCamParser {
         return total
     }
 
-    private static func extractTimestamp(_ filename: String) -> String? {
+    private nonisolated static func extractTimestamp(_ filename: String) -> String? {
         let pattern = #"(\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2})"#
         guard let regex = try? NSRegularExpression(pattern: pattern),
               let match = regex.firstMatch(in: filename, range: NSRange(filename.startIndex..., in: filename)) else { return nil }
         return (filename as NSString).substring(with: match.range(at: 1))
     }
 
-    private static func channelFromFilename(_ filename: String) -> CameraChannel? {
+    private nonisolated static func channelFromFilename(_ filename: String) -> CameraChannel? {
         let lower = filename.lowercased()
         if lower.contains("front")          { return .front }
         if lower.contains("back")           { return .back }
@@ -1129,15 +1128,11 @@ private class TeslaCamParser {
         return nil
     }
 
-    private static let tsFormatter: DateFormatter = {
-        let f = DateFormatter()
-        f.dateFormat = "yyyy-MM-dd_HH-mm-ss"
-        f.locale = Locale(identifier: "en_US_POSIX")
-        return f
-    }()
-
-    private static func dateFromTimestamp(_ ts: String) -> Date? {
-        tsFormatter.date(from: ts)
+    private nonisolated static func dateFromTimestamp(_ ts: String) -> Date? {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd_HH-mm-ss"
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        return formatter.date(from: ts)
     }
 }
 
