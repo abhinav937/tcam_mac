@@ -168,6 +168,7 @@ struct ContentView: View {
                         .id(selectedSection)
                         .transition(.opacity)
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
@@ -311,13 +312,46 @@ struct ContentView: View {
                 description: "There are no \(selectedSection.title.lowercased()) clips in this TeslaCam folder."
             )
         } else if filtered.isEmpty {
-            VStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 12) {
                 filterChipsRow
-                ContentUnavailableView.search(text: searchText.isEmpty ? dateFilter.rawValue : searchText)
+                sectionEmptyState(
+                    title: filteredEmptyStateTitle,
+                    description: filteredEmptyStateDescription
+                )
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         } else {
             clipGrid(for: filtered)
         }
+    }
+
+    private var filteredEmptyStateTitle: String {
+        if !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return "No Matching Clips"
+        }
+        if showFavoritesOnly && dateFilter != .all {
+            return "No Favorite Clips for \(dateFilter.rawValue)"
+        }
+        if showFavoritesOnly {
+            return "No Favorite Clips"
+        }
+        return "No Clips for \(dateFilter.rawValue)"
+    }
+
+    private var filteredEmptyStateDescription: String {
+        let sectionName = selectedSection.title.lowercased()
+        let trimmedSearch = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if !trimmedSearch.isEmpty {
+            return "No \(sectionName) clips match \"\(trimmedSearch)\" with the current filters."
+        }
+        if showFavoritesOnly && dateFilter != .all {
+            return "There are no favorite \(sectionName) clips for the \(dateFilter.rawValue.lowercased()) filter."
+        }
+        if showFavoritesOnly {
+            return "There are no favorite \(sectionName) clips in this TeslaCam folder."
+        }
+        return "There are no \(sectionName) clips for the \(dateFilter.rawValue.lowercased()) filter."
     }
 
     private func sectionEmptyState(title: String, description: String) -> some View {
