@@ -2046,9 +2046,10 @@ final class VideoExportEngine {
     private static let textRenderScale: CGFloat = 6
     private static let hudRenderScale: CGFloat = 2
     private static let hudBaseSize = CGSize(width: 340, height: 128)
+    private static let hudTopPadding: CGFloat = 30
     private static let hudFrame = CGRect(
-        x: 24,
-        y: 30,
+        x: (outputSize.width - (hudBaseSize.width * hudRenderScale)) / 2,
+        y: outputSize.height - (hudBaseSize.height * hudRenderScale) - hudTopPadding,
         width: hudBaseSize.width * hudRenderScale,
         height: hudBaseSize.height * hudRenderScale
     )
