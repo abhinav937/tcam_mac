@@ -794,7 +794,7 @@ struct ClipPreviewCard: View {
 private final class ThumbnailCache: @unchecked Sendable {
     nonisolated static let shared = ThumbnailCache()
 
-    private let memCache = NSCache<NSString, NSImage>()
+    nonisolated(unsafe) private let memCache = NSCache<NSString, NSImage>()
     private let diskCacheDir: URL
 
     nonisolated private init() {
@@ -938,9 +938,9 @@ private extension NSImage {
 
 enum SidebarSection: String, CaseIterable, Identifiable {
     case saved, sentry, recent
-    var id: String { rawValue }
-    var title: String { rawValue.capitalized }
-    var icon: String {
+    nonisolated var id: String { rawValue }
+    nonisolated var title: String { rawValue.capitalized }
+    nonisolated var icon: String {
         switch self {
         case .saved:  "bookmark.fill"
         case .sentry: "shield.lefthalf.filled"
