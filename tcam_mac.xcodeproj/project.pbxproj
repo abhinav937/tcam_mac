@@ -6,6 +6,11 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		14D9960B2F8CE21F002E5170 /* SwiftProtobuf in Frameworks */ = {isa = PBXBuildFile; productRef = 14D9960A2F8CE21F002E5170 /* SwiftProtobuf */; };
+		14D996122F8CE5E2002E5170 /* TeslaSEIParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = 14D996112F8CE5E2002E5170 /* TeslaSEIParser.swift */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXContainerItemProxy section */
 		14D995D52F8CD506002E5170 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -27,11 +32,25 @@
 		14D995C52F8CD504002E5170 /* tcam_mac.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = tcam_mac.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		14D995D42F8CD506002E5170 /* tcam_macTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = tcam_macTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		14D995DE2F8CD506002E5170 /* tcam_macUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = tcam_macUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		14D996112F8CE5E2002E5170 /* TeslaSEIParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TeslaSEIParser.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		14D9960C2F8CE383002E5170 /* Exceptions for "tcam_mac" folder in "tcam_mac" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				dashcam.proto,
+			);
+			target = 14D995C42F8CD504002E5170 /* tcam_mac */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		14D995C72F8CD504002E5170 /* tcam_mac */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				14D9960C2F8CE383002E5170 /* Exceptions for "tcam_mac" folder in "tcam_mac" target */,
+			);
 			path = tcam_mac;
 			sourceTree = "<group>";
 		};
@@ -52,6 +71,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				14D9960B2F8CE21F002E5170 /* SwiftProtobuf in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -78,7 +98,9 @@
 				14D995C72F8CD504002E5170 /* tcam_mac */,
 				14D995D72F8CD506002E5170 /* tcam_macTests */,
 				14D995E12F8CD506002E5170 /* tcam_macUITests */,
+				14D996092F8CE21F002E5170 /* Frameworks */,
 				14D995C62F8CD504002E5170 /* Products */,
+				14D996112F8CE5E2002E5170 /* TeslaSEIParser.swift */,
 			);
 			sourceTree = "<group>";
 		};
@@ -90,6 +112,13 @@
 				14D995DE2F8CD506002E5170 /* tcam_macUITests.xctest */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		14D996092F8CE21F002E5170 /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+			);
+			name = Frameworks;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -112,6 +141,7 @@
 			);
 			name = tcam_mac;
 			packageProductDependencies = (
+				14D9960A2F8CE21F002E5170 /* SwiftProtobuf */,
 			);
 			productName = tcam_mac;
 			productReference = 14D995C52F8CD504002E5170 /* tcam_mac.app */;
@@ -195,6 +225,9 @@
 			);
 			mainGroup = 14D995BC2F8CD504002E5170;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				14D996082F8CE20F002E5170 /* XCRemoteSwiftPackageReference "swift-protobuf" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 14D995C62F8CD504002E5170 /* Products */;
 			projectDirPath = "";
@@ -236,6 +269,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				14D996122F8CE5E2002E5170 /* TeslaSEIParser.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -394,6 +428,8 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ALLOW_ENTITLEMENTS_MODIFICATION = YES;
+				CODE_SIGN_ENTITLEMENTS = tcam_mac/tcam_mac.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
@@ -401,7 +437,7 @@
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
-				ENABLE_USER_SELECTED_FILES = readonly;
+				ENABLE_USER_SELECTED_FILES = readwrite;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -426,6 +462,8 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ALLOW_ENTITLEMENTS_MODIFICATION = YES;
+				CODE_SIGN_ENTITLEMENTS = tcam_mac/tcam_mac.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
@@ -433,7 +471,7 @@
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
-				ENABLE_USER_SELECTED_FILES = readonly;
+				ENABLE_USER_SELECTED_FILES = readwrite;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -457,6 +495,8 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_ALLOW_ENTITLEMENTS_MODIFICATION = YES;
+				CODE_SIGN_ENTITLEMENTS = tcam_mac/tcam_mac.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = S9935YSZGJ;
@@ -478,6 +518,8 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_ALLOW_ENTITLEMENTS_MODIFICATION = YES;
+				CODE_SIGN_ENTITLEMENTS = tcam_mac/tcam_mac.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = S9935YSZGJ;
@@ -498,6 +540,8 @@
 		14D995EF2F8CD506002E5170 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				CODE_SIGN_ALLOW_ENTITLEMENTS_MODIFICATION = YES;
+				CODE_SIGN_ENTITLEMENTS = tcam_mac/tcam_mac.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = S9935YSZGJ;
@@ -517,6 +561,8 @@
 		14D995F02F8CD506002E5170 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				CODE_SIGN_ALLOW_ENTITLEMENTS_MODIFICATION = YES;
+				CODE_SIGN_ENTITLEMENTS = tcam_mac/tcam_mac.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = S9935YSZGJ;
@@ -573,6 +619,25 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		14D996082F8CE20F002E5170 /* XCRemoteSwiftPackageReference "swift-protobuf" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/apple/swift-protobuf.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 1.36.1;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		14D9960A2F8CE21F002E5170 /* SwiftProtobuf */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 14D996082F8CE20F002E5170 /* XCRemoteSwiftPackageReference "swift-protobuf" */;
+			productName = SwiftProtobuf;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 14D995BD2F8CD504002E5170 /* Project object */;
 }
